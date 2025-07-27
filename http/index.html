@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+    <title>Denon WebIF</title>
+    <link rel="stylesheet" href="pico.min.css">
+    <script>
+        const MIN_DB = -80;
+        const MAX_DB = 18;
+        const SLIDER_RANGE = Math.abs(MIN_DB) + Math.abs(MAX_DB);
+
+        const sliderValueToDB = (value) => {
+            return (SLIDER_RANGE - value - MAX_DB) * -1;
+        }
+
+        const dbToSliderValue = (value) => {
+            const dbValue = parseInt(value.replace(".0", ""));
+            return SLIDER_RANGE + (dbValue + (MAX_DB * -1));
+        }
+
+        const get_sources = (doc) => {
+            let sources = [];
+            doc.querySelectorAll("item InputFuncList value").forEach((item, key) => {
+                sources[key] = {"orig": item.firstChild.textContent};
+            })
+            doc.querySelectorAll("item RenameSource value").forEach((item, key) => {
+                sources[key]["name"] = item.textContent.trim();
+            })
+            doc.querySelectorAll("item SourceDelete value").forEach((item, key) => {
+                if (item.textContent === "DEL") {
+                    delete sources[key];
+                }
+            })
+            let new_sources = [];
+            for (let key in sources) {
+                if (sources[key]["name"].length > 0) {
+                    new_sources.push(sources[key]);
+                }
+            }
+            return new_sources;
+        }
+
+        const update_power = (doc) => {
+            const power_value = doc.querySelector("item Power value").textContent;
+            document.getElementById("power_state").textContent = ` (${power_value})`;
+            document.getElementById("power").checked = power_value === "ON";
+        }
+
+        const update_sources = (doc) => {
+            const sources_fieldset = document.querySelector("fieldset#sources");
+            if (sources_fieldset.querySelectorAll("input").length < 1) {
+                const sources = get_sources(doc);
+                for (let key in sources) {
+                    sources_fieldset.innerHTML += `<label><input type="radio" name="input_source" value="${sources[key]["orig"]}" />${sources[key]["name"]}</label>`;
+                }
+            }
+
+            sources_fieldset.querySelectorAll("input").forEach(item => {
+                item.checked = item.value === doc.querySelector("item InputFuncSelect value").textContent;
+            })
+        }
+
+        const update_volume = (doc) => {
+            const master_volume = doc.querySelector("item MasterVolume value").textContent;
+            document.querySelector("span#volume_state").innerHTML = ` (${master_volume} dB)`;
+            document.querySelector("#volume_slider").value = dbToSliderValue(master_volume);
+        }
+
+        const update_all = () => {
+            const status = document.querySelector("#status");
+            status.innerHTML = "<article aria-busy=\"true\"></article>";
+
+            fetch("/remote/goform/formMainZone_MainZoneXml.xml")
+                .then((response) => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error: ${response.status}`);
+                    }
+                    return response.text();
+                })
+                .then((text) => {
+                    const doc = new DOMParser().parseFromString(text, "application/xml");
+
+                    update_power(doc);
+                    update_sources(doc);
+                    update_volume(doc);
+                    status.innerHTML = `Done (Last update: ${new Date().toLocaleString()})`;
+                })
+                .catch((e) => {
+                    console.error(`Could not fetch data: ${e}`);
+                    status.innerHTML = "Error fetching data (see logs)";
+                });
+        }
+
+        const update_remote = (cmd0) => {
+            const status = document.querySelector("#status");
+            status.innerHTML = "<article aria-busy=\"true\"></article>";
+
+            try {
+                fetch("/remote/MainZone/index.put.asp", {
+                    method: "POST",
+                    body: new URLSearchParams({cmd0}),
+                });
+                status.innerHTML = `Done (Last update: ${new Date().toLocaleString()})`;
+            } catch (e) {
+                console.error(`Could not send data: ${e}`);
+                status.innerHTML = "Error sending data (see logs)";
+            }
+        }
+
+        const onPowerToggle = (elem) => {
+            update_remote(`PutZone_OnOff/${elem.checked ? "ON" : "OFF"}`);
+            document.getElementById("power_state").textContent = ` (${elem.checked ? "ON" : "STANDBY"})`;
+        }
+
+        const onSliderMoving = (elem) => {
+            document.querySelector("span#volume_state").innerHTML = ` (${sliderValueToDB(elem.value)} dB)`
+        }
+
+        const onSliderMoved = (elem) => {
+            const volume = sliderValueToDB(elem.value);
+            update_remote(`PutMasterVolumeSet/${volume}.0`);
+        }
+
+        const onSourceChanged = () => {
+            const value = document.querySelector("input[name=input_source]:checked").value;
+            update_remote(`PutZone_InputFunction/${value}`);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // init volume slider
+            const volume_slider = document.querySelector("#volume_slider");
+            volume_slider.setAttribute("min", "0");
+            volume_slider.setAttribute("max", SLIDER_RANGE.toString());
+
+            update_all();
+            setInterval(update_all, 10000);
+        }, false);
+    </script>
+</head>
+<body>
+<main class="container">
+    <h1>Denon WebIf</h1>
+    <label>
+        <input id="power" type="checkbox" role="switch" onchange="onPowerToggle(this)"/>
+        Power<span id="power_state"></span>
+    </label>
+    <label>
+        Volume<span id="volume_state"></span>
+        <input type="range" id="volume_slider" min="1" max="1" step="1" value="1" oninput="onSliderMoving(this)"
+               onchange="onSliderMoved(this)"/>
+    </label>
+    <fieldset id="sources" onchange="onSourceChanged()">
+        <legend>Source</legend>
+    </fieldset>
+    <hr/>
+    <small id="status"></small>
+</main>
+</body>
+</html>
